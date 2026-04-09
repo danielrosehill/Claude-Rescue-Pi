@@ -164,6 +164,42 @@ laptop$ ssh claude-kvm
 
 `CLAUDE.md` primes Claude with: "You are operating from a recovery box. The target workstation may be in any of failure levels L1–L5. Your first action in every session is to run `/triage`."
 
+## 6.3 On-host instruction manifest (workstation-side)
+
+The Rescue-Pi agent should not have to guess the layout of the target workstation. Every workstation that Claude-Rescue-Pi is expected to recover should carry, on its own root filesystem, a **plain-text instruction manifest** written *for the recovery agent*.
+
+### Conventions
+
+- **Canonical path:** `/CLAUDE-RESCUE.md` (root of the filesystem, so it's reachable from an initramfs shell, a live USB chroot, or a serial getty without hunting through `/home`).
+- **Fallback paths** the agent should also check, in order:
+  1. `/CLAUDE-RESCUE.md`
+  2. `/etc/claude-rescue.md`
+  3. `/root/CLAUDE-RESCUE.md`
+  4. `/boot/CLAUDE-RESCUE.md` (survives even if root fs is unmountable)
+- **Encoding:** UTF-8, plain Markdown, no front-matter required.
+- **Audience:** written in the second person, addressed to "you, the recovery agent", not to a human reader. Assume the reader is Claude Code running on the Rescue-Pi, reached the file via serial or SSH, and needs to know what it's looking at.
+- **Tone:** terse, factual, imperative. No marketing, no history.
+
+### What the manifest must contain
+
+1. **Host identity** — hostname, OS + version, owner, contact.
+2. **Disk layout** — physical disks, partitions, LUKS containers (names, not passphrases), filesystems, mount points, subvolumes.
+3. **Boot chain** — bootloader, root UUID, rootflags, kernel cmdline quirks, any known-finicky drivers (e.g. "amdgpu black screen if X").
+4. **Network interfaces** — names, which are wired/wireless, which have static configs, which carry Tailscale.
+5. **Services that matter during recovery** — sshd config file paths, whether dropbear-initramfs is present, where the smart-plug lives on the network.
+6. **Known failure modes** — "if you see X, the cause is usually Y; try Z first". Each workstation accumulates these over time.
+7. **Snapshot / rollback mechanism** — snapper? timeshift? btrfs subvolume snapshots? Where and how to roll back.
+8. **Credential pointers** — *where* secrets live (1Password vault name, pass store path), never the secrets themselves. The agent prompts Daniel over the SSH session when a secret is actually needed.
+9. **Escalation rules** — what the agent is allowed to do autonomously vs. what requires confirmation. E.g. "you may run fsck on unmounted filesystems; you may not `dd` to any block device without explicit confirmation".
+10. **Last-updated date** — so the agent knows how stale the manifest is.
+
+### Workflow
+
+- The agent's `/triage` command, after establishing a connection to the workstation, **immediately reads this file** and loads it into context before suggesting any action.
+- If the file is missing, the agent says so loudly and refuses to run destructive skills until Daniel confirms manually.
+- The file is part of the workstation's own configuration management, not the Rescue-Pi repo — each host carries its own manifest. The Rescue-Pi repo should ship a **template** (`templates/CLAUDE-RESCUE.md`) that new hosts can copy and fill in.
+- The manifest is **not secret** in itself (no passphrases, no keys), but it is a detailed hardware/software fingerprint — treat it as private. Don't commit a real one to a public repo.
+
 ## 7. Pre-flight / triage
 
 On each SSH login (or as the first Claude action), the Pi should know the current reachability state. A `/triage` slash command runs:
