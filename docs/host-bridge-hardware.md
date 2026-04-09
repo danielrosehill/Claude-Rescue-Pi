@@ -43,11 +43,30 @@ The bridge is not one cable — it's a small stack of independent wired connecti
 ### Layer A — Serial console over the motherboard UART  *(primary rescue path)*
 
 - **What it is:** the motherboard's internal UART header (on MSI boards: `JCOM1`; on ASUS: `COM_1`; on Gigabyte: `COMA`). Still present on a surprising number of consumer mATX boards. It's a real 16550A UART hanging off the PCH, not USB.
-- **How to expose it:**
-  1. **9-pin header → DB9 rear bracket cable** (~$5). Brings the DB9 connector out through a rear I/O slot. Uses a slot cutout, **not** a PCIe slot.
-  2. **DB9 null-modem cable** (~$5). Must be null-modem (TX/RX crossed).
-  3. **USB-RS232 adapter on the Pi side** (~$15). **FTDI FT232RL** or **Prolific PL2303HXD**. Avoid CH340 for a rescue role; FTDI's Linux driver is the most trouble-free.
-- **What Claude sees on the Pi:** `/dev/ttyUSB0` as a character device, driven with `tio -b 115200 /dev/ttyUSB0` or `picocom`. Claude reads/writes it via Bash. Full terminal, scriptable, can capture to a log file.
+
+- **The one-piece cable (recommended):** a single cable with **USB-A on one end and the 9-pin motherboard COM header (IDC 2×5 or 1×9) on the other**, with an inline FTDI + MAX3232 RS-232 level shifter. Plugs directly from the Pi's USB port onto the host's JCOM1 header — no bracket, no DB9, no null-modem cable, no second adapter. One SKU, two plugs.
+
+  Search terms that find the right product category:
+  - "USB to motherboard 9-pin COM header RS232 serial cable FTDI"
+  - "USB to internal COM header cable"
+  - "FTDI USB to 9-pin motherboard serial cable"
+
+  What to look for when buying:
+  - **Chipset: FTDI FT232RL** (printed on the listing). Avoid CH340/CH341 for a rescue device — the drivers are fine on Linux but FTDI is more trouble-free across initramfs and minimal rescue images.
+  - **Inline RS-232 level converter** (not raw 3.3 V TTL). The JCOM1 header on consumer boards carries true RS-232 voltages (±12 V swing) — a TTL-only cable will either read garbage or damage the chip. Listings that say "RS232" or "MAX3232" are correct; listings that say only "TTL" or "UART 3.3V" are wrong for this job.
+  - **Header pinout matches DTK/AT standard.** MSI, ASUS, and Gigabyte all use the same 9-pin DTK pinout for internal COM headers. Avoid cables for laptop/industrial boards with nonstandard pinouts.
+  - **Length:** 50–100 cm is plenty. The Pi sits next to the workstation.
+
+  Known-decent makers in this category: **DTECH**, **CableCreation**, **StarTech** (though StarTech's 9-pin-header-to-DB9 bracket is a separate SKU from their USB-RS232 adapter — their catalog splits them). Ordering from AliExpress/Amazon "FTDI motherboard COM header USB cable" gets the integrated version for ~$15–25.
+
+  This is strictly one piece: **Pi USB ←→ motherboard JCOM1 header**. Nothing else to assemble.
+
+- **Fallback if you can't find the one-piece cable:** the three-piece build still works and uses only off-the-shelf parts:
+  1. 9-pin header → DB9 rear bracket cable (~$5).
+  2. DB9 null-modem cable (~$5). Must be null-modem (TX/RX crossed).
+  3. USB-RS232 adapter on the Pi side (~$15, FTDI FT232RL).
+
+- **What Claude sees on the Pi:** `/dev/ttyUSB0` as a character device, driven with `tio -b 115200 /dev/ttyUSB0` or `picocom`. Claude reads/writes it via Bash. Full terminal, scriptable, can capture to a log file. See §5 below for the skills needed to actually operate it.
 - **Coverage:** BIOS POST messages, GRUB menu, kernel early printk, initramfs emergency shell, systemd rescue target, `getty` login. **Does not require the host's kernel networking stack, NIC driver, USB stack, display, or userspace to be alive.** This is the layer that survives when everything else is broken.
 - **Does it take the ethernet port?** No. It uses a rear slot cutout, not the NIC.
 - **Does it take a PCIe slot?** No. Just a blank slot cover.
@@ -59,7 +78,9 @@ The bridge is not one cable — it's a small stack of independent wired connecti
 
 - **If the host has no COM header at all:** the fallback of equivalent directness is a **PCIe serial card** (~$20, e.g. StarTech PEX1S553). Same 16550A-class UART, just as an add-in card. It *does* consume a PCIe x1 slot but not the ethernet port. Functionally identical once the kernel enumerates it as a `ttyS*`.
 
-### Layer B — Direct-link ethernet via USB dongle  *(secondary, higher-bandwidth)*
+### Layer B — Direct-link ethernet via USB dongle  *(fallback for misconfigured networking only)*
+
+> **Status demotion:** Layer B is **not** an independent rescue path. It shares its single point of failure — the host's kernel networking stack, USB stack, and `sshd` — with every other network-based approach. It is included only because it cheaply rescues the narrow-but-real scenario where the host is *fully booted* but its *primary* network config is broken (bad DNS, corrupt NetworkManager profile, borked `iptables`, broken Tailscale update, fat-fingered `/etc/network/interfaces`). For anything below userspace — kernel panic, initramfs drop, dead NIC driver, hung init — Layer B is dead weight and Layer A does the work.
 
 - **What it is:** a **second, dedicated** NIC on each side connected by a short cable, carrying a private `/30` subnet that is never routed to the LAN. The key trick is that the workstation's extra NIC is a **USB 2.5GbE dongle**, so:
   - It doesn't touch the primary onboard ethernet port.
@@ -85,6 +106,50 @@ The bridge is not one cable — it's a small stack of independent wired connecti
 - **What Claude sees on the Pi:** an HTTP endpoint. A `/powercycle` slash command that does `curl -s http://shelly-desk.lan/rpc/Switch.Set?id=0&on=false && sleep 10 && curl ...&on=true` with a confirmation gate.
 - **Coverage:** the "host is fully wedged, serial shows nothing, no amount of magic SysRq helps" case. Doesn't require the host to be alive at all.
 - **Does it take the ethernet port?** No.
+
+## 5. Claude skills needed to actually use Layer A
+
+Layer A gives Claude a character device (`/dev/ttyUSB0`) — a raw, stateful, full-duplex serial stream. This is **not** the shape of input Claude's Bash tool handles well by default. Running `tio /dev/ttyUSB0` as a one-shot Bash command would hang forever; `cat /dev/ttyUSB0` dumps bytes until interrupted; keystrokes have to be sent without waiting for a "prompt" that may never come.
+
+So yes — Layer A needs **purpose-built skills** on the Pi. Without them, Claude can technically talk to the serial port but can't reliably hold a conversation over it.
+
+### The serial interaction problem
+
+- Serial output is **asynchronous and unbounded**. GRUB, kernel, and initramfs emit bytes on their own schedule. Claude has to *poll* or *tail* the stream, not run a command and wait for exit.
+- Serial input has to be **typed in, not piped**. Bootloaders and emergency shells expect interactive input — sometimes arrow keys, sometimes single-letter menu choices, sometimes a login prompt that appears only after the kernel is done.
+- **There is no shell on the other end to detect "command complete".** Claude has to reason about output windows: "wait until I see the string `initramfs>`", "wait until there's been 2 seconds of silence", "wait until I see a `:~#` prompt".
+- Boot stages change the **protocol** (GRUB menu → kernel dmesg → initramfs → LUKS prompt → systemd → getty). Each stage needs different handling.
+
+### Skills to build (under `.claude/skills/` in the rescue workspace)
+
+| Skill | What it does | How it's implemented |
+|---|---|---|
+| `serial-attach` | Opens the serial port, starts a background `tio` / `socat` session, tees all output to a rotating log file in `logs/serial-YYYYMMDD-HHMMSS.log`. Returns a handle Claude can read from. | Background `socat` bridging `/dev/ttyUSB0` ↔ a Unix socket (or TCP `127.0.0.1:7000`), plus `tee` to a log file. Claude `cat`s the log for recent output and `echo`s into the socket to send input. |
+| `serial-read-since` | Returns all bytes received since a given byte offset, or the last N lines. | `tail -c +OFFSET` or `tail -n N` on the log file. |
+| `serial-wait-for` | Blocks until a regex matches in the log stream or a timeout expires, returns matched line + surrounding context. | `tail -F` piped through `grep -m1 --line-buffered` with a `timeout` wrapper. |
+| `serial-send` | Sends a string (with or without trailing newline) to the host via the socat socket. | `printf '...\n' \| socat - UNIX-CONNECT:/tmp/serial.sock`. |
+| `serial-send-key` | Sends a special key: arrow keys, escape, tab, Ctrl-C, Ctrl-D, Break. Needed for GRUB menu navigation and SysRq. | Maps symbolic names to the right escape sequences (e.g. `UP` → `\x1b[A`). Break sequence is `tio`'s `ctrl-t b` or a raw TIOCSBRK ioctl. |
+| `serial-sysrq` | Sends a Magic SysRq command via serial break. Supports the standard letters: `s` (sync), `u` (remount ro), `b` (reboot), `e` (term all), `i` (kill all), `f` (oom-kill). Gated behind a confirmation for destructive letters. | Break + key sequence. Requires `kernel.sysrq=1` on the host. |
+| `grub-menu-drive` | High-level: navigate the GRUB menu by name, optionally edit a boot entry (press `e`) to add/remove kernel parameters, then boot. | Composes `serial-send-key` calls with `serial-wait-for` checkpoints. |
+| `initramfs-recover` | Recognizes the `(initramfs)` prompt, runs a canned diagnostic sequence (`blkid`, `cat /proc/modules`, `dmesg \| tail`), captures output, proposes next action. | A runbook driving `serial-send` + `serial-wait-for`. |
+| `luks-unlock` | Walks the user through entering a LUKS passphrase at the initramfs prompt. Prompts Daniel over the SSH session; never stores the passphrase on the Pi. | `serial-wait-for` the passphrase prompt, ask Daniel, `serial-send` the response, confirm mount. |
+| `serial-capture-bundle` | Snapshots the current serial log, `dmesg`, and triage state into a timestamped folder, optionally pushes to a private gist. | Pure shell + `gh gist create`. |
+
+### Dependencies on the Pi
+
+- `tio` (or `picocom` as fallback) — interactive serial client, good break-signal support.
+- `socat` — to bridge the serial port to a Unix socket so multiple Claude tool calls can share one session.
+- `screen` or `tmux` — optional, for persistent sessions a human could also attach to.
+- `expect` — not strictly needed; the skill design above avoids it, but useful as a fallback for complex prompted interactions.
+
+### What Claude *doesn't* need
+
+- Any model-side support beyond the Bash tool. All skills are shell scripts / runbooks that read and write files and sockets. Claude's role is decision-making — when to send what, when to wait, how to interpret output — not low-level I/O.
+- A custom MCP server. Serial is plain files and sockets; MCP would add complexity without benefit here.
+
+### In short
+
+**Yes, Layer A needs 8–10 purpose-built skills** — none of them individually complex, but together they form the vocabulary Claude needs to drive a serial console intelligently. Without them, the hardware bridge is there but Claude can't use it reliably. Building these skills is a P0 item alongside the hardware.
 
 ## What this bridge deliberately does *not* include
 
