@@ -5,9 +5,9 @@
 ## Design constraints
 
 1. **Don't consume the workstation's primary NIC.** On most single-ethernet desktops that port carries the LAN + VPN and has to stay on the LAN. The bridge must use a different physical path.
-2. **Must work when the host's kernel networking stack is dead.** (See `design.md` §3.1.) This rules out anything that depends on `sshd` or the NIC driver being alive.
+2. **Must work when the host's kernel networking stack is offline.** (See `design.md` §3.1.) This rules out anything that depends on `sshd` or the NIC driver being alive.
 3. **Must be a surface Claude can drive.** Something Claude can `read()` and `write()` to from its Bash tool — i.e. a character device (`/dev/ttyUSB0`) or a socket on the Pi. No GUI, no video.
-4. **Must survive a full OS reinstall or a dead root filesystem.** Ideally observable from BIOS POST onward.
+4. **Must survive a full OS reinstall or an unmountable root filesystem.** Ideally observable from BIOS POST onward.
 5. **Should be cheap, boring, and not depend on any specific CPU/chipset feature the host might not have.**
 
 ## The answer: three-layer wired bridge
@@ -74,13 +74,13 @@ The bridge is not one cable — it's a small stack of independent wired connecti
   - BIOS → enable Serial Port / COM1.
   - `/etc/default/grub`: set `GRUB_TERMINAL="console serial"`, `GRUB_SERIAL_COMMAND="serial --unit=0 --speed=115200"`, append `console=tty0 console=ttyS0,115200n8` to `GRUB_CMDLINE_LINUX_DEFAULT`, then `update-grub`.
   - `systemctl enable --now serial-getty@ttyS0.service`.
-  - Add a dedicated local `rescue` user with a password (so you can log in over serial when the network — and therefore any network-backed auth — is dead).
+  - Add a dedicated local `rescue` user with a password (so you can log in over serial when the network — and therefore any network-backed auth — is offline).
 
 - **If the host has no COM header at all:** the fallback of equivalent directness is a **PCIe serial card** (~$20, e.g. StarTech PEX1S553). Same 16550A-class UART, just as an add-in card. It *does* consume a PCIe x1 slot but not the ethernet port. Functionally identical once the kernel enumerates it as a `ttyS*`.
 
 ### Layer B — Direct-link ethernet via USB dongle  *(fallback for misconfigured networking only)*
 
-> **Status demotion:** Layer B is **not** an independent rescue path. It shares its single point of failure — the host's kernel networking stack, USB stack, and `sshd` — with every other network-based approach. It is included only because it cheaply rescues the narrow-but-real scenario where the host is *fully booted* but its *primary* network config is broken (bad DNS, corrupt NetworkManager profile, borked `iptables`, broken Tailscale update, fat-fingered `/etc/network/interfaces`). For anything below userspace — kernel panic, initramfs drop, dead NIC driver, hung init — Layer B is dead weight and Layer A does the work.
+> **Status demotion:** Layer B is **not** an independent rescue path. It shares its single point of failure — the host's kernel networking stack, USB stack, and `sshd` — with every other network-based approach. It is included only because it cheaply rescues the narrow-but-real scenario where the host is *fully booted* but its *primary* network config is broken (bad DNS, corrupt NetworkManager profile, borked `iptables`, broken Tailscale update, fat-fingered `/etc/network/interfaces`). For anything below userspace — kernel panic, initramfs drop, offline NIC driver, hung init — Layer B is useless weight and Layer A does the work.
 
 - **What it is:** a **second, dedicated** NIC on each side connected by a short cable, carrying a private `/30` subnet that is never routed to the LAN. The key trick is that the workstation's extra NIC is a **USB 2.5GbE dongle**, so:
   - It doesn't touch the primary onboard ethernet port.
@@ -178,6 +178,6 @@ This is additive to the Rescue-Pi itself (~$175–200, see `hardware-spec.md`). 
 Going lower than Layer A on a consumer desktop requires either:
 
 1. **JTAG on the CPU package** — needs an unlocked Management Engine, specialist probe, no getty on the other end. Not a practical rescue surface.
-2. **Direct SPI flashing of the BIOS chip** — a clip-on SOIC8 programmer. Useful for un-bricking a dead BIOS, but it is not an interactive "Claude can type commands" surface; it's a blind reflash.
+2. **Direct SPI flashing of the BIOS chip** — a clip-on SOIC8 programmer. Useful for un-bricking an offline BIOS, but it is not an interactive "Claude can type commands" surface; it's a blind reflash.
 
 Neither produces something Claude can hold a conversation with. Layer A (motherboard UART → USB-serial → Pi `/dev/ttyUSB0`) is the **lowest layer on a commodity PC that still gives you a two-way character stream Claude can drive**. Everything above it (Layers B and C) is gravy — useful gravy, but gravy.

@@ -16,7 +16,7 @@ The recovery box is single-purpose. It is not a general dev machine. Its only jo
 
 A few overlapping terms apply. Most accurate here:
 
-- **Jump host / bastion** — a hardened intermediate host you SSH through. True, but bastions usually forward to a *reachable* target. Here the target may be network-dead.
+- **Jump host / bastion** — a hardened intermediate host you SSH through. True, but bastions usually forward to a *reachable* target. Here the target may be network-offline.
 - **Out-of-band management (OOBM) node** — industry term for a device that reaches a host via a path independent of its primary NIC / OS. This is the closest fit.
 - **Lights-out / LOM surrogate** — consumer analog of iDRAC / iLO / IPMI, built from a Pi.
 - **KVM-over-IP** traditionally implies video + keyboard capture (PiKVM). We are explicitly **not** doing video. So "Claude-KVM" is a slight misnomer; really this is **"Claude-LOM"** or **"Claude-OOBM"**. Keeping the repo name for now.
@@ -34,7 +34,7 @@ What we need to recover from, ranked by how much of the workstation is alive:
 | L3 | Stuck in userspace (systemd hang, OOM, read-only root) | Maybe | Serial console (USB-TTL) to get a getty |
 | L4 | Stuck in initramfs / emergency shell | No | Serial console into initramfs shell |
 | L5 | Stuck in GRUB / pre-boot | No | Serial console to GRUB (requires GRUB serial config) |
-| L6 | Won't POST / dead PSU / dead disk | No | Out of scope — physical intervention |
+| L6 | Won't POST / offline PSU / offline disk | No | Out of scope — physical intervention |
 
 Claude-Rescue-Pi must credibly cover **L1–L5**. L6 is hardware.
 
