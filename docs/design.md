@@ -36,7 +36,32 @@ What we need to recover from, ranked by how much of the workstation is alive:
 | L5 | Stuck in GRUB / pre-boot | No | Serial console to GRUB (requires GRUB serial config) |
 | L6 | Won't POST / dead PSU / dead disk | No | Out of scope — physical intervention |
 
-Claude-KVM must credibly cover **L1–L5**. L6 is hardware.
+Claude-Rescue-Pi must credibly cover **L1–L5**. L6 is hardware.
+
+### 3.1 Dependency layering — what each path actually needs from the host
+
+The failure-level table above hides an important distinction: **most "network" paths still depend on the host's kernel networking stack being partially alive.** It is worth being explicit about what each rescue path assumes, so we don't fool ourselves into thinking we have redundancy when we don't.
+
+| Rescue path | Needs host userspace? | Needs host kernel networking? | Needs host NIC driver loaded? | Needs host CPU+RAM alive? |
+|---|---|---|---|---|
+| SSH over LAN (Tailscale or direct) | ✅ yes (`sshd`, network manager) | ✅ yes | ✅ yes | ✅ yes |
+| SSH over direct-link ethernet (dedicated NIC) | ✅ yes (`sshd` bound to that iface) | ✅ yes | ✅ yes (for that NIC) | ✅ yes |
+| SSH over `dropbear-initramfs` | ❌ no | ✅ yes (initramfs network config) | ✅ yes | ✅ yes |
+| USB ethernet gadget (if host supported it) | ✅ yes | ✅ yes | ✅ yes | ✅ yes |
+| **Serial console (UART)** | ❌ no | **❌ no** | **❌ no** | ✅ yes |
+| Smart-plug power cycle | ❌ no | ❌ no | ❌ no | ❌ no |
+| PXE/netboot rescue image | ❌ no (replaces it) | ✅ yes (firmware-level) | ✅ yes (firmware-level) | ✅ yes |
+
+**Implication:** the moment the host's networking stack is broken — bad NetworkManager config, failed VPN, kernel NIC driver crash, broken iptables/nftables rules, init not reaching the point where `sshd` starts — *every* network-based rescue path dies simultaneously. Adding "Tailscale plus LAN plus a dedicated direct-link NIC" does **not** give you three independent rescue paths against a network-stack failure; it gives you one path with three entry points, all of which share the same point of failure.
+
+The only two paths that survive a totally-broken host networking stack are:
+
+1. **Serial console** — the UART is a dumb hardware device. As long as the host CPU and a serial getty (or the bootloader, or the kernel) are writing bytes to it, you can read them on the Pi. Nothing about the host's network has to work. This is why the serial path is not just "one option among several" — it is **the one path that is architecturally independent of the failure mode we're most worried about**.
+2. **Smart-plug power control** — doesn't talk to the host at all, just to mains electricity. Lets you force a reboot even when the host is fully wedged.
+
+Everything else should be understood as a *convenience* layer on top of serial + power control: nice when they work, useless in the exact scenario the Rescue-Pi exists for.
+
+**Consequence for the design:** serial console is **not optional**. If we cannot establish a working serial path to a given workstation, we should not claim that workstation is covered by Claude-Rescue-Pi. A host with no serial path is at best covered for L1 scenarios (app/service breakage), which is the scenario that needs the Rescue-Pi least.
 
 ## 4. Physical connections to the workstation
 
